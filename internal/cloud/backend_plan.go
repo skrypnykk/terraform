@@ -351,7 +351,145 @@ in order to capture the filesystem context the remote workspace expects:
 		}
 	}
 
+	err = b.runTasks(stopCtx, cancelCtx, op, r)
+	if err != nil {
+		return r, err
+	}
+
 	return r, nil
+}
+
+type TaskResult struct {
+	message *string
+	status  string
+	name    string
+}
+
+type TaskStage struct {
+	id          string
+	taskResults []TaskResult
+}
+
+// String returns a pointer to the given string.
+func String(v string) *string {
+	return &v
+}
+
+func getPreApplyTaskStage(taskStageId string) TaskStage {
+	return TaskStage{
+		id: taskStageId,
+		taskResults: []TaskResult{
+			TaskResult{
+				message: String("message 1"),
+				status:  "errored",
+				name:    "name 1",
+			},
+			TaskResult{
+				message: String("message 2"),
+				status:  "passed",
+				name:    "name 2",
+			},
+			TaskResult{
+				message: String("message 3"),
+				status:  "passed",
+				name:    "name 3",
+			},
+		},
+	}
+
+}
+
+//Request URL: https://tfcdev-326ff8f0.ngrok.io/api/v2/runs/run-zwL9QqG57BCqXXu9/task-stages?include=task_results
+func (b *Cloud) runTasks(stopCtx context.Context, cancelCtx context.Context, op *backend.Operation, r *tfe.Run) error {
+
+	msgPrefix := "Run tasks"
+	started := time.Now()
+	updated := started
+	var passedTasks, erroredTasks, finishedTasks []TaskResult
+
+	for i := 0; ; i++ {
+		select {
+		case <-stopCtx.Done():
+			return stopCtx.Err()
+		case <-cancelCtx.Done():
+			return cancelCtx.Err()
+		case <-time.After(backoff(backoffMin, backoffMax, i)):
+		}
+		// checking if i == 0 so as to avoid printing this starting horizontal-rule
+		// every retry, and that it only prints it on the first (i=0) attempt.
+		if b.CLI != nil && i == 0 {
+			b.CLI.Output("\n------------------------------------------------------------------------\n")
+		}
+
+		taskStage := getPreApplyTaskStage("1")
+		taskResults := taskStage.taskResults
+
+		for _, task := range taskResults {
+
+			if len(finishedTasks) == len(taskResults) {
+				b.CLI.Output(b.Colorize().Color(msgPrefix + ":\n"))
+				resultSummary := determineResultSummary(passedTasks, erroredTasks)
+				b.CLI.Output(b.Colorize().Color(resultSummary))
+				return nil
+			}
+			//TODO: check if 10 min has passed to timeout with an appropriate msg
+
+			switch task.status {
+			case "pending":
+				// Check if 30 seconds have passed since the last update.
+				current := time.Now()
+				if b.CLI != nil && (i == 0 || current.Sub(updated).Seconds() > 30) {
+					updated = current
+					elapsed := ""
+
+					// Calculate and set the elapsed time.
+					if i > 0 {
+						elapsed = fmt.Sprintf(
+							" (%s elapsed)", current.Sub(started).Truncate(30*time.Second))
+					}
+					b.CLI.Output(b.Colorize().Color(msgPrefix + ":\n"))
+					b.CLI.Output(b.Colorize().Color("Waiting for Run Tasks to complete..." + elapsed + "\n"))
+					failedMsg := fmt.Sprintf("%d failed\n", len(erroredTasks))
+					successMsg := fmt.Sprintf("%d succesful\n", len(passedTasks))
+					pendingTasks := len(taskResults) - len(finishedTasks)
+					pendingMsg := fmt.Sprintf("%d pending\n", pendingTasks)
+
+					tempSummary := failedMsg + successMsg + pendingMsg
+
+					b.CLI.Output(b.Colorize().Color(tempSummary))
+				}
+				continue
+			case "passed":
+				passedTasks = append(passedTasks, task)
+				finishedTasks = append(finishedTasks, task)
+			case "errored":
+				erroredTasks = append(erroredTasks, task)
+				finishedTasks = append(finishedTasks, task)
+			default:
+				return fmt.Errorf("unknown or unexpected cost estimate state: %s", task.status)
+			}
+		}
+	}
+}
+
+func determineResultSummary(passedTasks, erroredTasks []TaskResult) string {
+	successMsg := ""
+	failedMsg := ""
+	if len(passedTasks) > 0 {
+		tasksNames := []string{}
+		for _, task := range passedTasks {
+			tasksNames = append(tasksNames, task.name)
+		}
+		successMsg = fmt.Sprintf("%d succesful task(s): %s\n", len(passedTasks), strings.Join(tasksNames, ", "))
+	}
+	if len(erroredTasks) > 0 {
+		tasksNames := []string{}
+		for _, task := range erroredTasks {
+			tasksNames = append(tasksNames, task.name)
+		}
+		failedMsg = fmt.Sprintf("%d failed task(s): %s\n", len(erroredTasks), strings.Join(tasksNames, ", "))
+	}
+	return successMsg + failedMsg
 }
 
 const planDefaultHeader = `
