@@ -370,6 +370,12 @@ type TaskStage struct {
 	taskResults []TaskResult
 }
 
+type statuses struct {
+	pending int
+	errored int
+	passed  int
+}
+
 // String returns a pointer to the given string.
 func String(v string) *string {
 	return &v
@@ -399,97 +405,80 @@ func getPreApplyTaskStage(taskStageId string) TaskStage {
 
 }
 
+func getSummaryTaskResults(taskResults []TaskResult) statuses {
+	var pe, er, pa int
+	for _, task := range taskResults {
+		if task.status == "pending" {
+			pe++
+		} else if task.status == "errored" {
+			er++
+		} else {
+			pa++
+		}
+	}
+	return statuses{
+		pending: pe,
+		errored: er,
+		passed:  pa,
+	}
+
+}
+
 //Request URL: https://tfcdev-326ff8f0.ngrok.io/api/v2/runs/run-zwL9QqG57BCqXXu9/task-stages?include=task_results
 func (b *Cloud) runTasks(stopCtx context.Context, cancelCtx context.Context, op *backend.Operation, r *tfe.Run) error {
 
 	msgPrefix := "Run tasks"
 	started := time.Now()
-	updated := started
-	var passedTasks, erroredTasks, finishedTasks []TaskResult
+	// updated := started
 
 	for i := 0; ; i++ {
+		waitInterval := backoff(backoffMin, backoffMax, i)
+
 		select {
 		case <-stopCtx.Done():
 			return stopCtx.Err()
 		case <-cancelCtx.Done():
 			return cancelCtx.Err()
-		case <-time.After(backoff(backoffMin, backoffMax, i)):
+		case <-time.After(waitInterval):
+			//waits time to elapse, then recheck tasks statuses
 		}
 		// checking if i == 0 so as to avoid printing this starting horizontal-rule
 		// every retry, and that it only prints it on the first (i=0) attempt.
 		if b.CLI != nil && i == 0 {
 			b.CLI.Output("\n------------------------------------------------------------------------\n")
+			b.CLI.Output(b.Colorize().Color(msgPrefix + ":\n"))
 		}
 
 		taskStage := getPreApplyTaskStage("1")
 		taskResults := taskStage.taskResults
+		statuses := getSummaryTaskResults(taskResults)
 
-		for _, task := range taskResults {
+		current := time.Now()
+		elapsed := current.Sub(started).Truncate(1 * time.Second)
+		elapsedMsg := ""
+		// elapsed := fmt.Sprintf(" (%s elapsed)", current.Sub(started).Truncate(1*time.Second))
+		if (statuses.pending) > 0 {
 
-			if len(finishedTasks) == len(taskResults) {
-				b.CLI.Output(b.Colorize().Color(msgPrefix + ":\n"))
-				resultSummary := determineResultSummary(passedTasks, erroredTasks)
-				b.CLI.Output(b.Colorize().Color(resultSummary))
-				return nil
-			}
-			//TODO: check if 10 min has passed to timeout with an appropriate msg
-
-			switch task.status {
-			case "pending":
-				// Check if 30 seconds have passed since the last update.
-				current := time.Now()
-				if b.CLI != nil && (i == 0 || current.Sub(updated).Seconds() > 30) {
-					updated = current
-					elapsed := ""
-
-					// Calculate and set the elapsed time.
-					if i > 0 {
-						elapsed = fmt.Sprintf(
-							" (%s elapsed)", current.Sub(started).Truncate(30*time.Second))
-					}
-					b.CLI.Output(b.Colorize().Color(msgPrefix + ":\n"))
-					b.CLI.Output(b.Colorize().Color("Waiting for Run Tasks to complete..." + elapsed + "\n"))
-					failedMsg := fmt.Sprintf("%d failed\n", len(erroredTasks))
-					successMsg := fmt.Sprintf("%d succesful\n", len(passedTasks))
-					pendingTasks := len(taskResults) - len(finishedTasks)
-					pendingMsg := fmt.Sprintf("%d pending\n", pendingTasks)
-
-					tempSummary := failedMsg + successMsg + pendingMsg
-
-					b.CLI.Output(b.Colorize().Color(tempSummary))
+			if b.CLI != nil && i%4 == 0 {
+				if i > 0 {
+					elapsedMsg = fmt.Sprintf(" (%s elapsed)", elapsed)
 				}
-				continue
-			case "passed":
-				passedTasks = append(passedTasks, task)
-				finishedTasks = append(finishedTasks, task)
-			case "errored":
-				erroredTasks = append(erroredTasks, task)
-				finishedTasks = append(finishedTasks, task)
-			default:
-				return fmt.Errorf("unknown or unexpected cost estimate state: %s", task.status)
+				b.CLI.Output(fmt.Sprintf("%d tasks still pending, %d passed, %d failed ... %s", statuses.pending, statuses.passed, statuses.errored, elapsedMsg))
 			}
+			continue
 		}
-	}
-}
 
-func determineResultSummary(passedTasks, erroredTasks []TaskResult) string {
-	successMsg := ""
-	failedMsg := ""
-	if len(passedTasks) > 0 {
-		tasksNames := []string{}
-		for _, task := range passedTasks {
-			tasksNames = append(tasksNames, task.name)
+		b.CLI.Output(fmt.Sprintf("All tasks completed! %d passed, %d failed", statuses.passed, statuses.errored))
+		for _, t := range taskResults {
+
+			title := b.Colorize().Color(fmt.Sprintf(`[reset][green]%s ⸺ %s[reset]`, t.name, t.status))
+			b.CLI.Output(title)
+			b.CLI.Output(*t.message)
 		}
-		successMsg = fmt.Sprintf("%d succesful task(s): %s\n", len(passedTasks), strings.Join(tasksNames, ", "))
+
+		b.CLI.Output("\n------------------------------------------------------------------------\n")
+		return nil
 	}
-	if len(erroredTasks) > 0 {
-		tasksNames := []string{}
-		for _, task := range erroredTasks {
-			tasksNames = append(tasksNames, task.name)
-		}
-		failedMsg = fmt.Sprintf("%d failed task(s): %s\n", len(erroredTasks), strings.Join(tasksNames, ", "))
-	}
-	return successMsg + failedMsg
 }
 
 const planDefaultHeader = `
