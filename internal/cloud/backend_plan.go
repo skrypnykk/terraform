@@ -350,7 +350,7 @@ in order to capture the filesystem context the remote workspace expects:
 			return r, err
 		}
 	}
-
+	//do not run if plan fails or no changes in plan
 	err = b.runTasks(stopCtx, cancelCtx, op, r)
 	if err != nil {
 		return r, err
@@ -359,77 +359,33 @@ in order to capture the filesystem context the remote workspace expects:
 	return r, nil
 }
 
-type TaskResult struct {
-	message *string
-	status  string
-	name    string
+type Statuses struct {
+	Pending int
+	Failed  int
+	Passed  int
 }
 
-type TaskStage struct {
-	id          string
-	taskResults []TaskResult
-}
-
-type statuses struct {
-	pending int
-	errored int
-	passed  int
-}
-
-// String returns a pointer to the given string.
-func String(v string) *string {
-	return &v
-}
-
-func getPreApplyTaskStage(taskStageId string) TaskStage {
-	return TaskStage{
-		id: taskStageId,
-		taskResults: []TaskResult{
-			TaskResult{
-				message: String("message 1"),
-				status:  "errored",
-				name:    "name 1",
-			},
-			TaskResult{
-				message: String("message 2"),
-				status:  "passed",
-				name:    "name 2",
-			},
-			TaskResult{
-				message: String("message 3"),
-				status:  "passed",
-				name:    "name 3",
-			},
-		},
-	}
-
-}
-
-func getSummaryTaskResults(taskResults []TaskResult) statuses {
+func getSummaryTaskResults(taskResults []*tfe.TaskResult) Statuses {
 	var pe, er, pa int
 	for _, task := range taskResults {
-		if task.status == "pending" {
+		if task.Status != "failed" && task.Status != "passed" {
 			pe++
-		} else if task.status == "errored" {
+		} else if task.Status == "failed" {
 			er++
 		} else {
 			pa++
 		}
 	}
-	return statuses{
-		pending: pe,
-		errored: er,
-		passed:  pa,
+	return Statuses{
+		Pending: pe,
+		Failed:  er,
+		Passed:  pa,
 	}
-
 }
-
-//Request URL: https://tfcdev-326ff8f0.ngrok.io/api/v2/runs/run-zwL9QqG57BCqXXu9/task-stages?include=task_results
 func (b *Cloud) runTasks(stopCtx context.Context, cancelCtx context.Context, op *backend.Operation, r *tfe.Run) error {
 
-	msgPrefix := "Run tasks"
+	msgPrefix := "[reset][bold]Run tasks:[reset]\n"
 	started := time.Now()
-	// updated := started
 
 	for i := 0; ; i++ {
 		waitInterval := backoff(backoffMin, backoffMax, i)
@@ -445,36 +401,82 @@ func (b *Cloud) runTasks(stopCtx context.Context, cancelCtx context.Context, op 
 		// checking if i == 0 so as to avoid printing this starting horizontal-rule
 		// every retry, and that it only prints it on the first (i=0) attempt.
 		if b.CLI != nil && i == 0 {
-			b.CLI.Output("\n------------------------------------------------------------------------\n")
-			b.CLI.Output(b.Colorize().Color(msgPrefix + ":\n"))
+			b.CLI.Output("\n------------------------------------------------------------------------\n") //REMOVE if cost estimate has run
+			b.CLI.Output(b.Colorize().Color(msgPrefix))
 		}
+		/*
+			stages := run.TasksStages
+			for _s := range stages {
+				taskStage := b.client.TasksStages.Read(context, stageID)
+				taskResults := taskStage.TaskResults
 
-		taskStage := getPreApplyTaskStage("1")
-		taskResults := taskStage.taskResults
+			}
+		*/
+		// taskStage := getPreApplyTaskStage(stage.ID)
+		taskStageList, err := b.client.TaskStages.List(stopCtx, r.ID, nil)
+		if err != nil {
+			return err
+		}
+		//grab id of first taskstage listed in items
+		taskStage, err := b.client.TaskStages.Read(stopCtx, taskStageList.Items[0].ID, &tfe.TaskStageReadOptions{Include: "task_results"})
+
+		if err != nil {
+			return err
+		}
+		taskResults := taskStage.TaskResults
 		statuses := getSummaryTaskResults(taskResults)
 
 		current := time.Now()
 		elapsed := current.Sub(started).Truncate(1 * time.Second)
 		elapsedMsg := ""
-		// elapsed := fmt.Sprintf(" (%s elapsed)", current.Sub(started).Truncate(1*time.Second))
-		if (statuses.pending) > 0 {
 
+		if (statuses.Pending) > 0 {
 			if b.CLI != nil && i%4 == 0 {
 				if i > 0 {
-					elapsedMsg = fmt.Sprintf(" (%s elapsed)", elapsed)
+					elapsedMsg = b.Colorize().Color(fmt.Sprintf("(%s elapsed)", elapsed))
 				}
-				b.CLI.Output(fmt.Sprintf("%d tasks still pending, %d passed, %d failed ... %s", statuses.pending, statuses.passed, statuses.errored, elapsedMsg))
+
+				pendingMsg := fmt.Sprintf("%d tasks still pending, %d passed, %d failed...", statuses.Pending, statuses.Passed, statuses.Failed)
+
+				paddedWaitingMsg := fmt.Sprintf("%-45s %-10s", pendingMsg, elapsedMsg)
+
+				b.CLI.Output(paddedWaitingMsg)
 			}
 			continue
 		}
 
-		b.CLI.Output(fmt.Sprintf("All tasks completed! %d passed, %d failed", statuses.passed, statuses.errored))
-		for _, t := range taskResults {
+		b.CLI.Output(fmt.Sprintf("\nAll tasks completed! %d passed, %d failed\n", statuses.Passed, statuses.Failed))
 
-			title := b.Colorize().Color(fmt.Sprintf(`[reset][green]%s ⸺ %s[reset]`, t.name, t.status))
+		isOverallResultFailed := false
+
+		for _, t := range taskResults {
+			if t.WorkspaceTaskEnforcementLevel == "mandatory" && t.Status == "failed" {
+				isOverallResultFailed = true
+			}
+			created := t.CreatedAt
+			finished := t.UpdatedAt
+			duration := finished.Sub(created).Truncate(1 * time.Second)
+			durationMsg := fmt.Sprintf("Task completed in %s", duration)
+			statusColor := ""
+			if t.Status == "failed" {
+				statusColor = "[red]"
+			} else {
+				statusColor = "[green]"
+			}
+			title := b.Colorize().Color(fmt.Sprintf(`%s -- [reset][bold]%s%s[reset]`, t.TaskName, statusColor, t.Status))
 			b.CLI.Output(title)
-			b.CLI.Output(*t.message)
+			b.CLI.Output(durationMsg)
+			b.CLI.Output(b.Colorize().Color(fmt.Sprintf(`[reset][cyan]%s[reset]`, t.Message)))
+			b.CLI.Output("\n")
 		}
+
+		overallResultMsg := ""
+		if isOverallResultFailed {
+			overallResultMsg = "[reset][bold][red]Failed (mandatory)[reset]"
+		} else {
+			overallResultMsg = "[reset][bold][red]Passed[reset]"
+		}
+		b.CLI.Output(b.Colorize().Color("[reset][bold]Overall result:[reset] ") + b.Colorize().Color(overallResultMsg))
 
 		b.CLI.Output("\n------------------------------------------------------------------------\n")
 		return nil
