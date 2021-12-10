@@ -10,13 +10,7 @@ import (
 	"github.com/hashicorp/terraform/internal/backend"
 )
 
-type TaskResult struct {
-	message *string
-	status  string
-	name    string
-}
-
-type statuses struct {
+type taskResultSummary struct {
 	pending         int
 	failed          int
 	failedMandatory int
@@ -31,7 +25,7 @@ func getPreApplyTaskStage(b *Cloud, stopCtx context.Context, taskStageId string)
 	return b.client.TaskStages.Read(stopCtx, taskStageId, &options)
 }
 
-func summarizeTaskResults(taskResults []*tfe.TaskResult) statuses {
+func summarizeTaskResults(taskResults []*tfe.TaskResult) taskResultSummary {
 	var pe, er, erm, pa int
 	for _, task := range taskResults {
 		if task.Status == "running" || task.Status == "pending" {
@@ -47,7 +41,7 @@ func summarizeTaskResults(taskResults []*tfe.TaskResult) statuses {
 		}
 	}
 
-	return statuses{
+	return taskResultSummary{
 		pending:         pe,
 		failed:          er,
 		failedMandatory: erm,
@@ -58,7 +52,6 @@ func summarizeTaskResults(taskResults []*tfe.TaskResult) statuses {
 func (b *Cloud) runTasks(stopCtx context.Context, cancelCtx context.Context, op *backend.Operation, r *tfe.Run) error {
 	msgPrefix := "Run tasks"
 	started := time.Now()
-	// updated := started
 
 	for i := 0; ; i++ {
 		select {
@@ -88,34 +81,45 @@ func (b *Cloud) runTasks(stopCtx context.Context, cancelCtx context.Context, op 
 		elapsed := current.Sub(started).Truncate(1 * time.Second)
 		elapsedMsg := ""
 		if summary.pending > 0 {
+			// Example pending output; the variable spacing allows up to 99 tasks (two digits) in each category:
+			// ---------------
+			// 3 tasks still pending, 0 passed, 0 failed ...
+			// 3 tasks still pending, 0 passed, 0 failed ...       (8s elapsed)
+			// 3 tasks still pending, 0 passed, 0 failed ...       (19s elapsed)
+			// 3 tasks still pending, 0 passed, 0 failed ...       (33s elapsed)
+
 			message := fmt.Sprintf("%d tasks still pending, %d passed, %d failed ... ", summary.pending, summary.passed, summary.failed)
-			maxChars := len(" tasks still pending,  passed,  failed ... ") + (3 * 3) // 3 placeholders, up to 3 digits each
+			allocatedChars := len(" tasks still pending,  passed,  failed ... ") + (3 * 2) // 3 placeholders, up to 2 digits each
+			spacing := strings.Repeat(" ", allocatedChars-len(message))                    // aligns the elapsed field to the right
 
 			if b.CLI != nil && i%4 == 0 {
 				if i > 0 {
-					elapsedMsg = b.Colorize().Color(fmt.Sprintf("%s[dark_gray](%s elapsed)", strings.Repeat(" ", maxChars-len(message)), elapsed))
+					elapsedMsg = b.Colorize().Color(fmt.Sprintf("%s[dark_gray](%s elapsed)", spacing, elapsed))
 				}
 				b.CLI.Output(message + elapsedMsg)
 			}
 			continue
 		}
 
+		// No more tasks pending/running. Print all the results.
+
+		// Track the first task name that is a mandatory enforcement level breach.
 		var firstMandatoryTaskFailed *string = nil
 		if b.CLI != nil {
 			b.CLI.Output(fmt.Sprintf("All tasks completed! %d passed, %d failed\n", summary.passed, summary.failed))
 		}
 
 		for _, t := range taskStage.TaskResults {
-			statusWord := string(t.Status)
-			statusWord = strings.ToUpper(statusWord[:1]) + statusWord[1:]
+			capitalizedStatus := string(t.Status)
+			capitalizedStatus = strings.ToUpper(capitalizedStatus[:1]) + capitalizedStatus[1:]
 
-			status := "[green]" + statusWord
+			status := "[green]" + capitalizedStatus
 			if t.Status != "passed" {
 				level := string(t.WorkspaceTaskEnforcementLevel)
 				level = strings.ToUpper(level[:1]) + level[1:]
-				status = fmt.Sprintf("[red]%s (%s)", statusWord, level)
+				status = fmt.Sprintf("[red]%s (%s)", capitalizedStatus, level)
 
-				if firstMandatoryTaskFailed == nil {
+				if t.WorkspaceTaskEnforcementLevel == "mandatory" && firstMandatoryTaskFailed == nil {
 					firstMandatoryTaskFailed = &t.TaskName
 				}
 			}
@@ -128,8 +132,9 @@ func (b *Cloud) runTasks(stopCtx context.Context, cancelCtx context.Context, op 
 			}
 		}
 
+		// If a mandatory enforcement level is breached, return an error.
 		var taskErr error = nil
-		if summary.failedMandatory > 0 {
+		if firstMandatoryTaskFailed != nil {
 			taskErr = fmt.Errorf("the run failed because the run task, %s, is required to succeed", *firstMandatoryTaskFailed)
 		}
 
