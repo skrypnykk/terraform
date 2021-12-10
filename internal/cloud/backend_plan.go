@@ -350,137 +350,21 @@ in order to capture the filesystem context the remote workspace expects:
 			return r, err
 		}
 	}
-	//do not run if plan fails or no changes in plan
-	err = b.runTasks(stopCtx, cancelCtx, op, r)
-	if err != nil {
-		return r, err
+
+	// Await collective run tasks
+	if len(r.TaskStage) > 0 {
+		err = b.runTasks(stopCtx, cancelCtx, op, r)
+		if err != nil {
+			return r, err
+		}
 	}
 
 	return r, nil
 }
 
-type Statuses struct {
-	Pending int
-	Failed  int
-	Passed  int
-}
-
-func getSummaryTaskResults(taskResults []*tfe.TaskResult) Statuses {
-	var pe, er, pa int
-	for _, task := range taskResults {
-		if task.Status != "failed" && task.Status != "passed" {
-			pe++
-		} else if task.Status == "failed" {
-			er++
-		} else {
-			pa++
-		}
-	}
-	return Statuses{
-		Pending: pe,
-		Failed:  er,
-		Passed:  pa,
-	}
-}
-func (b *Cloud) runTasks(stopCtx context.Context, cancelCtx context.Context, op *backend.Operation, r *tfe.Run) error {
-
-	msgPrefix := "[reset][bold]Run tasks:[reset]\n"
-	started := time.Now()
-
-	for i := 0; ; i++ {
-		waitInterval := backoff(backoffMin, backoffMax, i)
-
-		select {
-		case <-stopCtx.Done():
-			return stopCtx.Err()
-		case <-cancelCtx.Done():
-			return cancelCtx.Err()
-		case <-time.After(waitInterval):
-			//waits time to elapse, then recheck tasks statuses
-		}
-		// checking if i == 0 so as to avoid printing this starting horizontal-rule
-		// every retry, and that it only prints it on the first (i=0) attempt.
-		if b.CLI != nil && i == 0 {
-			b.CLI.Output("\n------------------------------------------------------------------------\n") //REMOVE if cost estimate has run
-			b.CLI.Output(b.Colorize().Color(msgPrefix))
-		}
-		/*
-			stages := run.TasksStages
-			for _s := range stages {
-				taskStage := b.client.TasksStages.Read(context, stageID)
-				taskResults := taskStage.TaskResults
-
-			}
-		*/
-		// taskStage := getPreApplyTaskStage(stage.ID)
-		taskStageList, err := b.client.TaskStages.List(stopCtx, r.ID, nil)
-		if err != nil {
-			return err
-		}
-		//grab id of first taskstage listed in items
-		taskStage, err := b.client.TaskStages.Read(stopCtx, taskStageList.Items[0].ID, &tfe.TaskStageReadOptions{Include: "task_results"})
-
-		if err != nil {
-			return err
-		}
-		taskResults := taskStage.TaskResults
-		statuses := getSummaryTaskResults(taskResults)
-
-		current := time.Now()
-		elapsed := current.Sub(started).Truncate(1 * time.Second)
-		elapsedMsg := ""
-
-		if (statuses.Pending) > 0 {
-			if b.CLI != nil && i%4 == 0 {
-				if i > 0 {
-					elapsedMsg = b.Colorize().Color(fmt.Sprintf("(%s elapsed)", elapsed))
-				}
-
-				pendingMsg := fmt.Sprintf("%d tasks still pending, %d passed, %d failed...", statuses.Pending, statuses.Passed, statuses.Failed)
-
-				paddedWaitingMsg := fmt.Sprintf("%-45s %-10s", pendingMsg, elapsedMsg)
-
-				b.CLI.Output(paddedWaitingMsg)
-			}
-			continue
-		}
-
-		b.CLI.Output(fmt.Sprintf("\nAll tasks completed! %d passed, %d failed\n", statuses.Passed, statuses.Failed))
-
-		isOverallResultFailed := false
-
-		for _, t := range taskResults {
-			if t.WorkspaceTaskEnforcementLevel == "mandatory" && t.Status == "failed" {
-				isOverallResultFailed = true
-			}
-			created := t.CreatedAt
-			finished := t.UpdatedAt
-			duration := finished.Sub(created).Truncate(1 * time.Second)
-			durationMsg := fmt.Sprintf("Task completed in %s", duration)
-			statusColor := ""
-			if t.Status == "failed" {
-				statusColor = "[red]"
-			} else {
-				statusColor = "[green]"
-			}
-			title := b.Colorize().Color(fmt.Sprintf(`%s -- [reset][bold]%s%s[reset]`, t.TaskName, statusColor, t.Status))
-			b.CLI.Output(title)
-			b.CLI.Output(durationMsg)
-			b.CLI.Output(b.Colorize().Color(fmt.Sprintf(`[reset][cyan]%s[reset]`, t.Message)))
-			b.CLI.Output("\n")
-		}
-
-		overallResultMsg := ""
-		if isOverallResultFailed {
-			overallResultMsg = "[reset][bold][red]Failed (mandatory)[reset]"
-		} else {
-			overallResultMsg = "[reset][bold][red]Passed[reset]"
-		}
-		b.CLI.Output(b.Colorize().Color("[reset][bold]Overall result:[reset] ") + b.Colorize().Color(overallResultMsg))
-
-		b.CLI.Output("\n------------------------------------------------------------------------\n")
-		return nil
-	}
+// String returns a pointer to the given string.
+func String(v string) *string {
+	return &v
 }
 
 const planDefaultHeader = `
