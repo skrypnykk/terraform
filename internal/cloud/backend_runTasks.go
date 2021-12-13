@@ -124,10 +124,10 @@ func (b *Cloud) runTasksWithTaskResults(subtask *Subtask, fetchTaskStage taskSta
 		if firstMandatoryTaskFailed != nil {
 			overall = "[red]Failed"
 			taskErr = fmt.Errorf("the run failed because the run task, %s, is required to succeed", *firstMandatoryTaskFailed)
-		}
-
-		if summary.failed-summary.failedMandatory > 0 {
-			overall = "[green]Passed with advisory failures"
+		} else {
+			if summary.failed > 0 { // we have failures but none of them mandatory
+				overall = "[green]Passed with advisory failures"
+			}
 		}
 
 		subtask.OutputColorWithPipe("")
