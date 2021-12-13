@@ -353,7 +353,15 @@ in order to capture the filesystem context the remote workspace expects:
 
 	// Await collective run tasks
 	if len(r.TaskStage) > 0 {
-		err = b.runTasks(stopCtx, cancelCtx, op, r)
+		err = b.runTasks(&Subtask{
+			Name:          "Run tasks",
+			B:             b,
+			StopContext:   stopCtx,
+			CancelContext: cancelCtx,
+			Op:            op,
+			Run:           r,
+		})
+
 		if err != nil {
 			return r, err
 		}
