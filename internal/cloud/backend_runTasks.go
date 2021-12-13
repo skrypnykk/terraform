@@ -57,12 +57,12 @@ func (b *Cloud) runTasksWithTaskResults(subtask *Subtask, fetchTaskStage taskSta
 		case <-time.After(backoff(backoffMin, backoffMax, i)):
 			// waits time to elapse, then recheck tasks statuses
 		}
+
 		// checking if i == 0 so as to avoid printing this starting horizontal-rule
 		// every retry, and that it only prints it on the first (i=0) attempt.
 		if i == 0 {
-			subtask.OutputBegin()
+			subtask.OutputBegin() //Do we want to print title before we out ruling we have an error from fetchTaskStage?89
 		}
-
 		// TODO: get the stage that corresponds to an argument passed to this function
 		stage, err := fetchTaskStage(b, subtask.StopContext)
 
@@ -92,7 +92,10 @@ func (b *Cloud) runTasksWithTaskResults(subtask *Subtask, fetchTaskStage taskSta
 		} else {
 			subtask.OutputPendingElapsed(started, fmt.Sprintf("All tasks completed! %d passed, %d failed", summary.passed, summary.failed), 50)
 		}
-		subtask.Output("")
+
+		// Insert a blank line to separate the ouputs.
+		b.CLI.Output("")
+		// subtask.Output("")
 
 		for _, t := range stage.TaskResults {
 			capitalizedStatus := string(t.Status)
