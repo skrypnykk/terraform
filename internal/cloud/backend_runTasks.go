@@ -88,14 +88,13 @@ func (b *Cloud) runTasksWithTaskResults(subtask *Subtask, fetchTaskStage taskSta
 		var firstMandatoryTaskFailed *string = nil
 
 		if i == 0 {
-			subtask.Output(fmt.Sprintf("All tasks completed! %d passed, %d failed", summary.passed, summary.failed))
+			subtask.OutputColor(fmt.Sprintf("All tasks completed! %d passed, %d failed", summary.passed, summary.failed))
 		} else {
 			subtask.OutputPendingElapsed(started, fmt.Sprintf("All tasks completed! %d passed, %d failed", summary.passed, summary.failed), 50)
 		}
 
 		// Insert a blank line to separate the ouputs.
 		b.CLI.Output("")
-		// subtask.Output("")
 
 		for _, t := range stage.TaskResults {
 			capitalizedStatus := string(t.Status)
@@ -113,10 +112,10 @@ func (b *Cloud) runTasksWithTaskResults(subtask *Subtask, fetchTaskStage taskSta
 			}
 
 			title := fmt.Sprintf(`%s ⸺   %s`, t.TaskName, status)
-			subtask.OutputColor(title)
+			subtask.OutputColorWithPipe(title)
 
-			subtask.OutputColor(fmt.Sprintf("[dim]%s", t.Message))
-			subtask.OutputColor("")
+			subtask.OutputColorWithPipe(fmt.Sprintf("[dim]%s", t.Message))
+			subtask.OutputColorWithPipe("")
 		}
 
 		// If a mandatory enforcement level is breached, return an error.
@@ -131,8 +130,8 @@ func (b *Cloud) runTasksWithTaskResults(subtask *Subtask, fetchTaskStage taskSta
 			overall = "[green]Passed with advisory failures"
 		}
 
-		subtask.OutputColor("")
-		subtask.OutputColor("[bold]Overall Result: " + overall)
+		subtask.OutputColorWithPipe("")
+		subtask.OutputColorWithPipe("[bold]Overall Result: " + overall)
 
 		subtask.OutputEnd()
 

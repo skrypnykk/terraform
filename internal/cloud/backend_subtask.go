@@ -10,7 +10,6 @@ import (
 	"github.com/hashicorp/terraform/internal/backend"
 )
 
-
 type Subtask struct {
 	Name          string
 	B             *Cloud
@@ -41,15 +40,22 @@ func (s *Subtask) OutputEnd() {
 	s.B.CLI.Output("\n------------------------------------------------------------------------\n")
 }
 
-func (s *Subtask) OutputColor(str string) {
-	s.Output(s.B.Colorize().Color(str))
+func (s *Subtask) OutputColorWithPipe(str string) {
+	s.OutputWithPipe(s.B.Colorize().Color(str))
 }
 
-func (s *Subtask) Output(str string) {
+func (s *Subtask) OutputWithPipe(str string) {
 	if !s.hasCLI() {
 		return
 	}
 	s.B.CLI.Output(s.B.Colorize().Color("[reset]│ ") + str)
+}
+
+func (s *Subtask) OutputColor(str string) {
+	if !s.hasCLI() {
+		return
+	}
+	s.B.CLI.Output(s.B.Colorize().Color(str))
 }
 
 // Example pending output; the variable spacing (50 chars) allows up to 99 tasks (two digits) in each category:
